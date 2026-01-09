@@ -38,10 +38,13 @@
    */
   "env": {
     "staging": {
-      "routes": [{ "pattern": "x402-staging.aibtc.dev", "custom_domain": true }],
+      "routes": [{ "pattern": "x402-relay.aibtc.dev", "custom_domain": true }],
       "vars": {
         "STACKS_NETWORK": "testnet"
-      }
+      },
+      "services": [
+        { "binding": "LOGS", "service": "worker-logs", "entrypoint": "LogsRPC" }
+      ]
     },
 
     /**
@@ -51,7 +54,10 @@
       "routes": [{ "pattern": "x402.aibtc.dev", "custom_domain": true }],
       "vars": {
         "STACKS_NETWORK": "mainnet"
-      }
+      },
+      "services": [
+        { "binding": "LOGS", "service": "worker-logs", "entrypoint": "LogsRPC" }
+      ]
     }
   }
 }
