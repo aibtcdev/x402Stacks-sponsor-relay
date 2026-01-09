@@ -8,10 +8,12 @@
     "deploy:dry-run": "wrangler deploy --dry-run",
     "check": "tsc --noEmit",
     "wrangler": "set -a && . ./.env && set +a && npx wrangler",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "test:relay": "tsx scripts/test-relay.ts"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "wrangler": "^4.58.0"
   },
