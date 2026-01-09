@@ -4,9 +4,9 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-x402 Stacks Sponsor Relay - A Cloudflare Worker enabling gasless transactions for AI agents on the Stacks blockchain. Accepts pre-signed transactions, validates agent authorization, sponsors the transaction, and relays to x402 facilitator.
+x402 Stacks Sponsor Relay - A Cloudflare Worker enabling gasless transactions for AI agents on the Stacks blockchain. Accepts pre-signed sponsored transactions, sponsors them with our key, and broadcasts to the Stacks network.
 
-**Status**: Initial scaffolding complete. See REQUIREMENTS.md for goals and open questions.
+**Status**: Core relay endpoint implemented. Ready for testnet deployment and testing.
 
 ## Commands
 
@@ -23,6 +23,9 @@ npm run check
 # Dry-run deploy (verify build)
 npm run deploy:dry-run
 
+# Test relay endpoint
+npm run test:relay -- <private-key> [relay-url]
+
 # DO NOT run npm run deploy - commit and push for automatic deployment
 ```
 
@@ -30,27 +33,33 @@ npm run deploy:dry-run
 
 **Stack:**
 - Cloudflare Workers for deployment
-- Hono.js (planned) for HTTP routing
 - @stacks/transactions for Stacks transaction handling
+- x402-stacks (fork) for building sponsored transactions
 - worker-logs service binding for centralized logging
 
 **Endpoints:**
-- `/health` - Health check endpoint
-- `/relay` - Main endpoint for transaction sponsorship (TODO)
+- `GET /health` - Health check with network info
+- `POST /relay` - Submit sponsored transaction for sponsorship and broadcast
+
+**Request/Response:**
+```typescript
+// POST /relay
+Request: { transaction: "hex-encoded-sponsored-tx" }
+Response: { txid: "0x..." } | { error: "...", details: "..." }
+```
 
 **Project Structure:**
 ```
 src/
-  index.ts          # Worker entry point, HTTP routing
-  # Planned:
-  relay.ts          # Transaction sponsorship logic
-  auth.ts           # SIP-018 signature verification
-  types.ts          # TypeScript interfaces
+  index.ts          # Worker entry point with /relay endpoint
+scripts/
+  test-relay.ts     # Test script for building and submitting sponsored tx
 ```
 
 ## Configuration
 
 - `wrangler.jsonc` - Cloudflare Workers config (service bindings, routes)
+- `.dev.vars` - Local development secrets (not committed)
 - Secrets set via `wrangler secret put`:
   - `SPONSOR_PRIVATE_KEY` - Private key for sponsoring transactions
 
@@ -58,55 +67,72 @@ src/
 
 **LOGS** - Universal logging service (RPC binding to worker-logs)
 ```typescript
-// Usage:
-await env.LOGS.info('x402-relay', 'Transaction sponsored', { txid, agentId })
-await env.LOGS.error('x402-relay', 'Sponsorship failed', { error })
+const logs = env.LOGS as unknown as LogsRPC;
+ctx.waitUntil(logs.info('x402-relay', 'Transaction sponsored', { txid }));
 ```
 
 See [worker-logs integration guide](~/dev/whoabuddy/worker-logs/docs/integration.md) for details.
 
-## Key Decisions Needed
+## Key Decisions Made
 
-See REQUIREMENTS.md for full list. Key blockers:
-1. Stacks facilitator: Build or integrate?
-2. Payment token: STX, aBTC, or USDC?
-3. Auth flow: SIP-018 signatures vs API keys?
-4. Other sponsored tx examples to learn from?
+| Decision | Choice |
+|----------|--------|
+| Agent auth | Any Stacks address (ERC-8004 milestone later) |
+| Flow | Agent calls relay directly |
+| Abuse prevention | Rate limits (10 req/min per sender) |
+| Payment tokens | STX, sBTC, USDCx |
+| Facilitator | facilitator.x402stacks.xyz (existing) |
 
 ## Related Projects
 
-**Best Practice References:**
-- `~/dev/absorbingchaos/thundermountainbuilders/` - CF Worker patterns (D1, R2, Email)
-- `~/dev/whoabuddy/worker-logs/` - Universal logging service
+**x402 Stacks Ecosystem:**
+- `~/dev/whoabuddy/stx402/` - x402 implementation (stx402.com)
+- `~/dev/tony1908/x402Stacks/` - x402-stacks npm package (PR #8 adds sponsored tx)
+- Facilitator: facilitator.x402stacks.xyz
 
 **aibtcdev Resources:**
-- `../erc-8004-stacks/` - Agent identity contracts
-- `../agent-tools-ts/src/stacks-alex/` - Sponsored tx examples
-- `../aibtcdev-cache/` - Existing CF Worker with Durable Objects
+- `../erc-8004-stacks/` - Agent identity contracts (future integration)
+- `../agent-tools-ts/src/stacks-alex/` - ALEX sponsored tx examples
 
-## Wrangler Setup
+**Infrastructure:**
+- `~/dev/whoabuddy/worker-logs/` - Universal logging service (logs.wbd.host)
 
-Wrangler commands need environment variables from `.env`. Use this pattern:
+## Development Workflow
 
-```bash
-# Add to ~/.bashrc or run before wrangler commands
-alias wrangler='set -a && . ./.env && set +a && npx wrangler'
+1. Start dev server: `npm run dev`
+2. Set `SPONSOR_PRIVATE_KEY` in `.dev.vars`
+3. Test with: `npm run test:relay -- <agent-private-key> http://localhost:8787`
+4. Check logs at logs.wbd.host
+
+## Sponsored Transaction Flow
+
+```
+Agent                          Relay                         Stacks Network
+  │                              │                                  │
+  │ 1. Build tx with             │                                  │
+  │    sponsored: true, fee: 0   │                                  │
+  │                              │                                  │
+  │ 2. POST /relay               │                                  │
+  │    { transaction: hex }      │                                  │
+  │─────────────────────────────▶│                                  │
+  │                              │ 3. Deserialize & validate       │
+  │                              │    (must be AuthType.Sponsored) │
+  │                              │                                  │
+  │                              │ 4. sponsorTransaction()         │
+  │                              │    (add sponsor sig + fee)      │
+  │                              │                                  │
+  │                              │ 5. broadcastTransaction()       │
+  │                              │─────────────────────────────────▶│
+  │                              │                                  │
+  │                              │◀─────────────────────────────────│
+  │◀─────────────────────────────│ 6. Return txid                  │
+  │ { txid: "0x..." }            │                                  │
 ```
 
-Or add an npm script:
-```bash
-npm run wrangler -- <command>
-```
+## Next Steps
 
-### Secrets
-
-Set via `wrangler secret put`:
-- `SPONSOR_PRIVATE_KEY` - STX private key for sponsoring transactions
-
-## Development Notes
-
-- Follow existing aibtcdev patterns for Cloudflare Workers
-- Use `wrangler.jsonc` format with comments (not .toml)
-- Test against testnet before mainnet
-- Integrate worker-logs early for debugging
-- Use service bindings over HTTP where possible
+- [ ] Deploy to testnet staging environment
+- [ ] End-to-end test with real testnet transactions
+- [ ] Add SIP-018 signature verification (optional auth layer)
+- [ ] Integrate x402 payment flow for fee recovery
+- [ ] Add ERC-8004 agent registry lookup

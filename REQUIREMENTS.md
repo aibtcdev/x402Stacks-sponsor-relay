@@ -1,213 +1,189 @@
 # x402 Stacks Sponsor Relay
 
-A Cloudflare Worker that enables gasless transactions for AI agents on the Stacks blockchain by sponsoring and relaying transactions to an x402 facilitator.
+A Cloudflare Worker that enables gasless transactions for AI agents on the Stacks blockchain by sponsoring and relaying transactions.
 
 ## Overview
 
 The [x402 protocol](https://www.x402.org/) is an HTTP-native payment standard that uses the HTTP 402 "Payment Required" status code to enable instant, autonomous stablecoin payments. This project brings x402 to Stacks by providing a sponsor relay service that:
 
-1. Accepts pre-signed transactions from agents
-2. Validates the transaction and agent authorization via signatures
-3. Sponsors the transaction (covers gas fees)
-4. Relays to the x402 facilitator for settlement on Stacks
+1. Accepts pre-signed sponsored transactions from agents
+2. Validates the transaction format (must be sponsored type)
+3. Sponsors the transaction (covers gas fees with our key)
+4. Broadcasts to the Stacks network
 
 ## Goals
 
 ### Primary Goals
 
-- [ ] **Gasless agent transactions**: Agents can submit transactions without holding STX for fees
-- [ ] **Signature-based auth**: Validate agent identity using SIP-018 structured data signatures
+- [x] **Gasless agent transactions**: Agents can submit transactions without holding STX for fees
+- [ ] **Signature-based auth**: Validate agent identity using SIP-018 structured data signatures (optional)
 - [ ] **x402 compatibility**: Integrate with x402 protocol flow for payment verification
-- [ ] **Stacks-native**: Full support for Stacks transaction types and Clarity contracts
+- [x] **Stacks-native**: Full support for Stacks transaction types
 
 ### Secondary Goals
 
-- [ ] **Rate limiting**: Prevent abuse with per-agent rate limits
+- [x] **Rate limiting**: Prevent abuse with per-sender rate limits (10 req/min)
 - [ ] **Spending caps**: Configurable max sponsorship per agent/timeframe
-- [ ] **Metrics/logging**: Track usage for billing and debugging
-- [ ] **Multi-network**: Support both mainnet and testnet
+- [x] **Metrics/logging**: Track usage via worker-logs service
+- [x] **Multi-network**: Support both mainnet and testnet via config
 
-## Context
+## Implementation Status
 
-### Existing Work
+### Completed
 
-**Sponsored Transactions:**
-- **`agent-tools-ts/src/stacks-alex/sponsored-swap.ts`**: ALEX SDK sponsored transactions
-- **`agent-tools-ts/src/stacks-alex/sponsored-broadcast.ts`**: Broadcast pattern for sponsored tx
-- **Other sponsored tx examples**: See Open Questions #12
+- [x] Core `/relay` POST endpoint
+- [x] Transaction deserialization and sponsored type validation
+- [x] `sponsorTransaction()` integration with @stacks/transactions
+- [x] Broadcasting to Stacks network
+- [x] In-memory rate limiting per sender
+- [x] CORS headers for cross-origin requests
+- [x] worker-logs integration for observability
+- [x] Test script for end-to-end validation
+- [x] x402-stacks fork with `sponsored: true` support (PR #8)
 
-**Agent Identity:**
-- **`erc-8004-stacks/`**: ERC-8004 agent identity/reputation contracts (testnet deployed)
+### Pending
 
-**Cloudflare Patterns:**
-- **`~/dev/absorbingchaos/thundermountainbuilders/`**: Best practice CF Worker with D1, R2, Email Workers
-  - Uses `wrangler.jsonc` format with comments
-  - TanStack Start/Router + Hono patterns
-  - Comprehensive CLAUDE.md and `.claude/settings.local.json`
-- **`aibtcdev-cache/`**: Existing aibtcdev CF Worker with Durable Objects
+- [ ] Deploy to testnet staging
+- [ ] End-to-end test with real transactions
+- [ ] SIP-018 signature verification
+- [ ] x402 payment flow for fee recovery
+- [ ] ERC-8004 agent registry integration
+- [ ] Persistent rate limiting (KV or Durable Objects)
 
-**Universal Logging:**
-- **`~/dev/whoabuddy/worker-logs/`**: Centralized logging service for CF Workers
-  - Live at: https://logs.wbd.host
-  - RPC service binding for internal workers (no API key needed)
-  - Per-app isolated SQLite via Durable Objects
-  - See [Integration Guide](~/dev/whoabuddy/worker-logs/docs/integration.md)
+## Decisions Made
 
-### x402 Protocol
+| Question | Decision |
+|----------|----------|
+| Agent identity | Start with any Stacks address; ERC-8004 as future milestone |
+| Flow origin | Agent calls relay directly |
+| Abuse prevention | Rate limits (10 req/min per sender) |
+| Payment token | STX, sBTC, USDCx (via x402-stacks) |
+| Facilitator | Use existing facilitator.x402stacks.xyz |
 
-From the [x402 whitepaper](https://www.x402.org/x402-whitepaper.pdf):
-
-- Client requests resource without payment → Server responds HTTP 402
-- Response includes `PaymentRequirements` with accepted networks/tokens
-- Client signs and submits payment to facilitator
-- Facilitator settles on-chain and returns proof
-- Client retries request with payment proof
-
-**Key roles**:
-- **Resource Server**: The API or service requiring payment (our relay is the resource)
-- **Facilitator**: Handles payment verification and settlement (we relay TO this)
-- **Client**: The agent making the request
-
-### Stacks Specifics
-
-- Use **SIP-018** for signed structured data verification
-- Transactions require a sponsor signature for fee-less submission
-- Stacks.js `sponsorTransaction()` for adding sponsor signature
-- Broadcast via Hiro API or direct to node
-
-## Architecture (Draft)
+## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────────┐     ┌─────────────────┐
-│   Agent     │────▶│  Sponsor Relay       │────▶│ x402 Facilitator│
-│  (Client)   │     │  (Cloudflare Worker) │     │   (Stacks)      │
-└─────────────┘     └──────────────────────┘     └─────────────────┘
-      │                       │                          │
-      │ 1. POST /relay        │                          │
-      │    + signed tx        │                          │
-      │    + auth signature   │                          │
-      │◀──────────────────────│                          │
-      │ 2. 402 Payment Req    │                          │
-      │    (if not paid)      │                          │
-      │                       │                          │
-      │ 3. Retry with payment │                          │
-      │─────────────────────▶ │                          │
-      │                       │ 4. Sponsor tx            │
-      │                       │─────────────────────────▶│
-      │                       │ 5. Broadcast             │
-      │◀──────────────────────│◀─────────────────────────│
-      │ 6. txid               │                          │
+Agent                          Relay                         Stacks Network
+  │                              │                                  │
+  │ 1. Build tx with             │                                  │
+  │    sponsored: true, fee: 0   │                                  │
+  │                              │                                  │
+  │ 2. POST /relay               │                                  │
+  │    { transaction: hex }      │                                  │
+  │─────────────────────────────▶│                                  │
+  │                              │ 3. Deserialize & validate       │
+  │                              │    (must be AuthType.Sponsored) │
+  │                              │                                  │
+  │                              │ 4. sponsorTransaction()         │
+  │                              │    (add sponsor sig + fee)      │
+  │                              │                                  │
+  │                              │ 5. broadcastTransaction()       │
+  │                              │─────────────────────────────────▶│
+  │                              │                                  │
+  │◀─────────────────────────────│◀─────────────────────────────────│
+  │ { txid: "0x..." }            │                                  │
 ```
 
-## API Design (Draft)
+## API
 
 ### POST /relay
 
 Request:
 ```json
 {
-  "transaction": "<hex-encoded-stacks-transaction>",
-  "agentId": "stacks:2147483648:identity-registry:0",
-  "signature": "<SIP-018-signature>",
-  "paymentProof": "<optional-x402-payment-proof>"
+  "transaction": "<hex-encoded-sponsored-stacks-transaction>"
 }
 ```
 
 Response (success):
 ```json
 {
-  "txid": "0x...",
-  "status": "broadcasted"
+  "txid": "0x..."
 }
 ```
 
-Response (payment required):
-```
-HTTP 402 Payment Required
-X-Payment: <payment-requirements>
+Response (error):
+```json
+{
+  "error": "Transaction must be sponsored",
+  "details": "Build transaction with sponsored: true"
+}
 ```
 
-## Open Questions
+### GET /health
+
+Response:
+```json
+{
+  "status": "ok",
+  "network": "testnet",
+  "version": "0.1.0"
+}
+```
+
+## Open Questions (Remaining)
 
 ### Protocol Design
 
-1. **Facilitator location**: Build our own Stacks facilitator or integrate with existing x402 infrastructure?
-   - x402 currently supports Base, Solana, Polygon, Avalanche, Sui, Near
-   - No existing Stacks facilitator found
+1. ~~**Facilitator location**~~: Using existing facilitator.x402stacks.xyz
 
-2. **Payment token**: What token for sponsorship fees?
-   - STX native?
-   - aBTC (wrapped Bitcoin)?
-   - USDC on Stacks?
+2. ~~**Payment token**~~: STX, sBTC, USDCx supported via x402-stacks
 
 3. **Payment timing**: Pre-pay (deposit) or pay-per-transaction?
-   - Deposit model: Agent deposits funds, relay deducts per tx
-   - Pay-per-tx: x402 flow with 402 response on each request
+   - Currently: Free sponsorship with rate limits
+   - Future: x402 payment flow for fee recovery
 
 4. **Settlement**: On-chain or off-chain accounting?
-   - Clarity contract for deposits/withdrawals?
-   - Or centralized balance tracking?
+   - Currently: No settlement (free tier)
+   - Future: Clarity contract for deposits/withdrawals?
 
 ### Authentication
 
-5. **Agent identity**: How to verify agent is authorized?
-   - ERC-8004 identity registry lookup?
-   - SIP-018 signature verification?
-   - API keys per agent?
+5. ~~**Agent identity**~~: Any Stacks address; ERC-8004 as milestone
 
 6. **Signature message**: What structured data should agents sign?
-   - Transaction hash?
-   - Nonce + timestamp + tx hash?
-   - Full SIP-018 domain separation?
+   - Currently: Not required
+   - Future: SIP-018 domain-separated message
 
 ### Operations
 
-7. **Sponsor key management**: How to secure the sponsor private key?
-   - Cloudflare Secrets?
-   - Multiple keys with rotation?
-   - Hardware security module?
+7. **Sponsor key management**: Currently Cloudflare Secrets
+   - Future: Key rotation? Multiple keys?
 
-8. **Rate limits**: What limits are appropriate?
-   - Per agent per hour/day?
-   - Global throughput limits?
-   - Spending caps in STX/USD?
+8. ~~**Rate limits**~~: 10 req/min per sender (in-memory)
+   - Future: Persistent via KV or Durable Objects
 
-9. **Monitoring**: What metrics matter?
-   - Transactions sponsored
-   - Fees paid
-   - Agent activity
-   - Error rates
+9. **Monitoring**: Using worker-logs service
+   - Future: Metrics dashboard?
 
-### Integration
+## Context
 
-10. **x402 compatibility**: How closely follow the spec?
-    - Full HTTP 402 flow?
-    - Simplified version for Stacks?
-    - Hybrid approach?
+### Existing Work
 
-11. **ERC-8004 integration**: Use agent identity registry?
-    - Require registered agents only?
-    - Or open to any valid Stacks address?
+**x402 Stacks Ecosystem:**
+- **stx402** (`~/dev/whoabuddy/stx402/`): Full x402 implementation at stx402.com
+- **x402-stacks** (`~/dev/tony1908/x402Stacks/`): npm package, PR #8 adds sponsored tx
+- **Facilitator**: facilitator.x402stacks.xyz (testnet + mainnet)
 
-### Learning & Research
+**Sponsored Transactions:**
+- **`agent-tools-ts/src/stacks-alex/`**: ALEX SDK sponsored transaction examples
+- **Stacks.js docs**: https://docs.stacks.co/stacks.js/build-transactions#sponsored-transactions
 
-12. **Other sponsored tx resources**: What other implementations should we learn from?
-    - ALEX SDK sponsored tx service (how does their backend work?)
-    - Hiro/Stacks ecosystem examples?
-    - Other meta-transaction patterns from EVM?
+**Agent Identity:**
+- **`erc-8004-stacks/`**: ERC-8004 agent identity/reputation contracts (testnet deployed)
 
-13. **Logging integration**: Use worker-logs service binding?
-    - RPC binding vs HTTP API?
-    - What log levels and context for each operation?
-    - Request correlation for debugging?
+**Infrastructure:**
+- **worker-logs** (`~/dev/whoabuddy/worker-logs/`): Universal logging at logs.wbd.host
 
 ## Next Steps
 
-1. Research existing x402 facilitator implementations
-2. Define the minimum viable authentication flow
-3. Design the Clarity contract for deposits (if needed)
-4. Implement basic relay without 402 flow first
-5. Add x402 payment layer
+1. ~~Research existing x402 facilitator implementations~~ ✓
+2. ~~Implement basic relay without 402 flow~~ ✓
+3. Deploy to testnet staging environment
+4. End-to-end test with real testnet transactions
+5. Add SIP-018 signature verification (optional auth)
+6. Add x402 payment layer for fee recovery
+7. Design Clarity contract for deposits (if needed)
 
 ## Resources
 
@@ -215,15 +191,13 @@ X-Payment: <payment-requirements>
 - [x402 Protocol](https://www.x402.org/)
 - [x402 GitHub](https://github.com/coinbase/x402)
 - [x402 Documentation](https://docs.cdp.coinbase.com/x402/welcome)
-- [x402 Whitepaper](https://www.x402.org/x402-whitepaper.pdf)
 
 ### Stacks
+- [Sponsored Transactions](https://docs.stacks.co/stacks.js/build-transactions#sponsored-transactions)
 - [SIP-018 Signed Structured Data](https://github.com/stacksgov/sips/blob/main/sips/sip-018/sip-018-signed-structured-data.md)
 - [Stacks.js Transactions](https://stacks.js.org/packages/transactions)
-- [Hiro API](https://docs.hiro.so/stacks/api)
 
 ### Local Resources
-- [ERC-8004 Stacks Contracts](../erc-8004-stacks/)
-- [ALEX Sponsored Transactions](../agent-tools-ts/src/stacks-alex/)
-- [CF Best Practices - Thunder Mountain](~/dev/absorbingchaos/thundermountainbuilders/)
-- [Universal Logger](~/dev/whoabuddy/worker-logs/) - https://logs.wbd.host
+- [x402-stacks PR #8](https://github.com/tony1908/x402Stacks/pull/8) - Sponsored tx support
+- [stx402 Implementation](~/dev/whoabuddy/stx402/) - Reference patterns
+- [Universal Logger](~/dev/whoabuddy/worker-logs/) - logs.wbd.host
