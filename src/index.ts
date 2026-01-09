@@ -1,20 +1,12 @@
-import type { Service } from "cloudflare:workers";
-
-// LogsRPC interface (from worker-logs service)
+/**
+ * LogsRPC interface (from worker-logs service)
+ * Defined locally since worker-logs isn't a published package
+ */
 interface LogsRPC {
   info(appId: string, message: string, context?: Record<string, unknown>): Promise<void>;
   warn(appId: string, message: string, context?: Record<string, unknown>): Promise<void>;
   error(appId: string, message: string, context?: Record<string, unknown>): Promise<void>;
   debug(appId: string, message: string, context?: Record<string, unknown>): Promise<void>;
-}
-
-export interface Env {
-  // Sponsor private key for signing transactions
-  SPONSOR_PRIVATE_KEY: string;
-  // Stacks network (mainnet or testnet)
-  STACKS_NETWORK: string;
-  // Universal logging service (RPC binding)
-  LOGS: Service<LogsRPC>;
 }
 
 const APP_ID = "x402-relay";
@@ -33,9 +25,12 @@ export default {
 
     // TODO: Implement sponsor relay endpoint
     if (url.pathname === "/relay" && request.method === "POST") {
+      // Cast LOGS to RPC interface (Service binding with entrypoint)
+      const logs = env.LOGS as unknown as LogsRPC;
+
       // Log the incoming request (fire-and-forget)
       ctx.waitUntil(
-        env.LOGS.info(APP_ID, "Relay request received", {
+        logs.info(APP_ID, "Relay request received", {
           request_id: requestId,
           method: request.method,
           url: request.url,
