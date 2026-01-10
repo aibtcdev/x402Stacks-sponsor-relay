@@ -51,7 +51,7 @@
      * Production Environment
      */
     "production": {
-      "routes": [{ "pattern": "x402.aibtc.dev", "custom_domain": true }],
+      "routes": [{ "pattern": "x402-relay.aibtc.com", "custom_domain": true }],
       "vars": {
         "STACKS_NETWORK": "mainnet"
       },
